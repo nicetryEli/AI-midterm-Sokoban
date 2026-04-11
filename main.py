@@ -1,43 +1,60 @@
 from Board import Board
 from State import State
-from Astar import a_star
+from Astar import general_a_star, heuristic_chebyshev_sokoban
 import pygame
 import sys
 import ast
+import os
 
-# ==========================================
-# 1. CẤU HÌNH THÔNG SỐ CƠ BẢN
-# ==========================================
+from SelfPlay import run_self_play
+
 CELL_SIZE = 50
 FPS = 60
-MOVE_DELAY = 300  # Thời gian chờ giữa mỗi bước đi (milliseconds)
+MOVE_DELAY = 300 
 
-# Màu sắc (R, G, B)
-COLOR_BG = (40, 44, 52)         # Nền tối
-COLOR_WALL = (100, 100, 100)    # Tường xám
-COLOR_GOAL = (46, 204, 113)     # Đích màu xanh lá
-COLOR_PLAYER = (231, 76, 60)    # Người chơi màu đỏ
-COLOR_BOX = (243, 156, 18)      # Thùng màu cam
-COLOR_BOX_ON_GOAL = (155, 89, 182) # Thùng đã vào đích màu tím
+IMG_PATHS = {
+    "menu_bg": "assets/menu_background.jpg", 
+    "game_bg": "assets/background.png", #
+    "wall": "assets/wall.png",
+    "player": "assets/sato.png",
+    "box": "assets/balls.png",
+    "box_on_goal": "assets/ball.png"
+}
+
+GOAL_IMG_PATHS = [
+    "assets/ngua.png", 
+    "assets/pinky.png",
+    "assets/eve.png",
+    "assets/pkachu.png",
+    "assets/Piplup.png",
+]
+
+class SokobanProblem:
+    def __init__(self, board):
+        self.board = board
+
+    def is_goal(self, state):
+        return set(state.boxes) == set(self.board.goals)
+
+    def get_successors(self, state):
+        from Astar import get_next_states
+        return get_next_states(state, self.board)
 
 def main_function():
-    # Dùng lại hàm load_map để tránh lặp code
     walls, goals, boxes, player_pos, _, _ = load_map()
-
     if player_pos is None:
         print("error: missing important component in the map!")
-        return
-
-    # Khởi tạo đối tượng từ các class đã import
+        return False
+    
     board = Board(walls, goals)
     start_state = State(player_pos, tuple(sorted(boxes)))
 
-    print("solving...")
-    path = a_star(start_state, board)
+    print("AI is solving...")
+    problem = SokobanProblem(board)
+    path = general_a_star(problem, start_state, heuristic_chebyshev_sokoban)
 
-    # In ra kết quả
     if path:
-        print(f"found the solution in {len(path) - 1} steps!")
+        print(f"found a solution with {len(path) - 1} steps!")
         moves = []
         for i in range(1, len(path)):
             prev = path[i-1].player_pos
@@ -45,26 +62,23 @@ def main_function():
             dx = curr[0] - prev[0]
             dy = curr[1] - prev[1]
             moves.append((dx, dy))
-                
+
         with open("output.txt", "w", encoding="utf-8") as f:
             f.write("[\n")
             for i, move in enumerate(moves):
-                if i < len(moves) - 1:
-                    f.write(f"{move},\n")
-                else:
-                    f.write(f"{move}\n")
+                f.write(f"    {move},\n" if i < len(moves)-1 else f"    {move}\n")
             f.write("]")
-                
-        print("the solution has been saved in 'output.txt'.")    
+        print("solution saved in 'output.txt'")
+        return True
     else:
-        print("\n cannot find the solution!")
+        print("cant find solution!")
         with open("output.txt", "w", encoding="utf-8") as f:
             f.write("[]")
-# ==========================================
-# 2. HÀM ĐỌC DỮ LIỆU TỪ FILE
-# ==========================================
+        return False
+
 def load_map(filename="input.txt"):
-    walls, goals, boxes = set(), set(), set()
+    walls, boxes = set(), set()
+    goals = [] 
     player_pos = None
     max_x, max_y = 0, 0
 
@@ -78,7 +92,7 @@ def load_map(filename="input.txt"):
             if char == '%':
                 walls.add((x, y))
             elif char in ('C', 'D', '+'):
-                goals.add((x, y))
+                goals.append((x, y))
             if char in ('A', '+'):
                 player_pos = (x, y)
             if char in ('B', 'C'):
@@ -90,60 +104,45 @@ def load_moves(filename="output.txt"):
     try:
         with open(filename, "r", encoding="utf-8") as f:
             content = f.read()
-            # Dùng ast.literal_eval để chuyển chuỗi "[(1,0),...]" thành mảng Python an toàn
             moves = ast.literal_eval(content)
             return moves
     except Exception as e:
-        print(f"Không thể đọc file {filename} hoặc file trống. Lỗi: {e}")
+        print(f"Không thể đọc file {filename}. Lỗi: {e}")
         return []
 
-# ==========================================
-# 3. VÒNG LẶP PYGAME CHÍNH
-# ==========================================
-def main():
-    # Khởi tạo dữ liệu
-    walls, goals, boxes, player_pos, cols, rows = load_map()
-    moves = load_moves()
+def load_and_scale_image(path, size, default_color=(0,0,0)):
+    try:
+        img = pygame.image.load(path).convert_alpha()
+        return pygame.transform.scale(img, size)
+    except:
+        surface = pygame.Surface(size)
+        surface.fill(default_color)
+        return surface
 
-    if player_pos is None:
-        print("Lỗi: Không tìm thấy nhân vật trên bản đồ.")
-        return
-
-    # Khởi tạo cửa sổ Pygame
-    pygame.init()
-    width = cols * CELL_SIZE
-    height = rows * CELL_SIZE
-    screen = pygame.display.set_mode((width, height))
-    pygame.display.set_caption("Sokoban Auto-Solver Animation")
+def run_ai_animation(screen, walls, goals, boxes, player_pos, moves, images):
     clock = pygame.time.Clock()
-
-    # Biến điều khiển
     move_index = 0
     last_move_time = pygame.time.get_ticks()
     is_finished = False
     game_started = False
-
     running = True
+
+    boxes = set(boxes)
+
     while running:
-        # 1. EVENT
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                running = False
-
-            # Nhấn SPACE để bắt đầu
+                pygame.quit()
+                sys.exit()
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     game_started = True
 
-        # 2. UPDATE
         current_time = pygame.time.get_ticks()
-
         if game_started and current_time - last_move_time > MOVE_DELAY and move_index < len(moves):
             dx, dy = moves[move_index]
-
             new_player_pos = (player_pos[0] + dx, player_pos[1] + dy)
 
-            # xử lý đẩy thùng
             if new_player_pos in boxes:
                 new_box_pos = (new_player_pos[0] + dx, new_player_pos[1] + dy)
                 boxes.remove(new_player_pos)
@@ -156,51 +155,88 @@ def main():
             if move_index == len(moves):
                 is_finished = True
 
-        # 3. DRAW
-        screen.fill(COLOR_BG)
+        screen.blit(images['bg'], (0, 0))
 
-        # Vẽ goal
-        for gx, gy in goals:
-            rect = pygame.Rect(gx * CELL_SIZE + 10, gy * CELL_SIZE + 10, CELL_SIZE - 20, CELL_SIZE - 20)
-            pygame.draw.circle(screen, COLOR_GOAL, rect.center, 10)
-
-        # Vẽ wall
         for wx, wy in walls:
-            rect = pygame.Rect(wx * CELL_SIZE, wy * CELL_SIZE, CELL_SIZE, CELL_SIZE)
-            pygame.draw.rect(screen, COLOR_WALL, rect)
-            pygame.draw.rect(screen, (50, 50, 50), rect, 2)
+            screen.blit(images['wall'], (wx * CELL_SIZE, wy * CELL_SIZE))
 
-        # Vẽ box
+        for i, (gx, gy) in enumerate(goals):
+            goal_img = images['goals'][i % len(images['goals'])]
+            screen.blit(goal_img, (gx * CELL_SIZE, gy * CELL_SIZE))
+
         for bx, by in boxes:
-            rect = pygame.Rect(bx * CELL_SIZE + 5, by * CELL_SIZE + 5, CELL_SIZE - 10, CELL_SIZE - 10)
             if (bx, by) in goals:
-                pygame.draw.rect(screen, COLOR_BOX_ON_GOAL, rect)
+                screen.blit(images['box_on_goal'], (bx * CELL_SIZE, by * CELL_SIZE))
             else:
-                pygame.draw.rect(screen, COLOR_BOX, rect)
-            pygame.draw.rect(screen, (0, 0, 0), rect, 2)
+                screen.blit(images['box'], (bx * CELL_SIZE, by * CELL_SIZE))
 
-        # Vẽ player
         px, py = player_pos
-        player_rect = pygame.Rect(px * CELL_SIZE + 5, py * CELL_SIZE + 5, CELL_SIZE - 10, CELL_SIZE - 10)
-        pygame.draw.ellipse(screen, COLOR_PLAYER, player_rect)
+        screen.blit(images['player'], (px * CELL_SIZE, py * CELL_SIZE))
 
-        # Màn hình chờ
         if not game_started:
             font = pygame.font.SysFont(None, 48)
-            text = font.render("Press SPACE to start", True, (255, 255, 255))
-            screen.blit(text, (width // 2 - text.get_width() // 2, height // 2))
+            text = font.render("Press SPACE to start AI", True, (168, 168, 168))
+            screen.blit(text, (screen.get_width() // 2 - text.get_width() // 2, screen.get_height() // 2))
 
-        # Hiện khi xong
         if is_finished:
             font = pygame.font.SysFont(None, 48)
-            text = font.render("SOLVED!", True, (255, 255, 255))
-            screen.blit(text, (width // 2 - text.get_width() // 2, 10))
+            text = font.render("SOLVED!", True, (168, 168, 168))
+            screen.blit(text, (screen.get_width() // 2 - text.get_width() // 2, 10))
 
         pygame.display.flip()
         clock.tick(FPS)
 
-    pygame.quit()
-    sys.exit()
+def main():
+    pygame.init()
+    
+    walls, goals, boxes, player_pos, cols, rows = load_map()
+    if player_pos is None:
+        print("cannot find player position.")
+        return
+
+    width = cols * CELL_SIZE
+    height = rows * CELL_SIZE
+    screen = pygame.display.set_mode((width, height))
+    pygame.display.set_caption("Sokoban Menu")
+
+    images = {
+        'menu_bg': load_and_scale_image(IMG_PATHS["menu_bg"], (width, height), (40, 44, 52)),
+        'bg': load_and_scale_image(IMG_PATHS["game_bg"], (width, height), (40, 44, 52)),
+        'wall': load_and_scale_image(IMG_PATHS["wall"], (CELL_SIZE, CELL_SIZE), (100, 100, 100)),
+        'player': load_and_scale_image(IMG_PATHS["player"], (CELL_SIZE, CELL_SIZE), (231, 76, 60)),
+        'box': load_and_scale_image(IMG_PATHS["box"], (CELL_SIZE, CELL_SIZE), (243, 156, 18)),
+        'box_on_goal': load_and_scale_image(IMG_PATHS["box_on_goal"], (CELL_SIZE, CELL_SIZE), (155, 89, 182)),
+        'goals': [load_and_scale_image(path, (CELL_SIZE, CELL_SIZE), (46, 204, 113)) for path in GOAL_IMG_PATHS]
+    }
+    
+    if not images['goals']:
+        images['goals'].append(pygame.Surface((CELL_SIZE, CELL_SIZE)))
+        images['goals'][0].fill((46, 204, 113))
+
+    font = pygame.font.SysFont(None, 40)
+    
+    while True:
+        screen.blit(images['menu_bg'], (0, 0))
+        
+        opt1_text = font.render("1. Self Play", True, (0, 50, 100))
+        opt2_text = font.render("2. Auto-Solver", True, (0, 100, 50))
+        
+        screen.blit(opt1_text, (width//2 - opt1_text.get_width()//2, height//2+150))
+        screen.blit(opt2_text, (width//2 - opt2_text.get_width()//2, height//2 + 180))
+
+        pygame.display.flip()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_1:
+                    run_self_play(screen, walls, goals, set(boxes), player_pos, cols, rows, CELL_SIZE, FPS, images)
+                elif event.key == pygame.K_2:
+                    if main_function(): 
+                        moves = load_moves()
+                        run_ai_animation(screen, walls, goals, set(boxes), player_pos, moves, images)
+
 if __name__ == "__main__":
-    main_function()
     main()
